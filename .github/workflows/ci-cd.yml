@@ -63,15 +63,16 @@ jobs:
         run: |
           docker run --network ci-network --rm curlimages/curl:latest -sS -D - http://ci-payment:3663/ | sed -n '1,60p'
 
-      - name: Always: dump container logs & list containers
+      - name: Always dump container logs and list containers
         if: always()
         run: |
           echo "----- ci-payment logs -----"
-          docker logs ci-payment || true
+          docker logs ci-payment 2>&1 || echo "ci-payment container not found"
           echo "----- ci-mongo logs -----"
-          docker logs ci-mongo || true
+          docker logs ci-mongo 2>&1 || echo "ci-mongo container not found"
           echo "----- docker ps -a -----"
           docker ps -a || true
+
 
       - name: Cleanup containers (always)
         if: always()
