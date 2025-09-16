@@ -21,7 +21,9 @@ jobs:
 
       - name: Start Mongo (test DB)
         run: |
-          docker run -d --name ci-mongo --network ci-network \
+          docker run -d \
+            --name ci-mongo \
+            --network ci-network \
             -e MONGO_INITDB_ROOT_USERNAME=mongo \
             -e MONGO_INITDB_ROOT_PASSWORD=password \
             mongo:4.2
@@ -33,7 +35,9 @@ jobs:
         env:
           MONGODB_URI: mongodb://mongo:password@ci-mongo:27017/?authSource=admin
         run: |
-          docker run -d --name ci-payment --network ci-network \
+          docker run -d \
+            --name ci-payment \
+            --network ci-network \
             -e MONGODB_URI="${MONGODB_URI}" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
@@ -45,7 +49,7 @@ jobs:
         run: |
           for i in $(seq 1 25); do
             echo "Attempt $i ..."
-            curl -sS -m 5 http://localhost:3663/healthz && exit 0 || true
+            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://ci-payment:3663/healthz && exit 0 || true
             sleep 3
           done
           echo "Service did not respond within timeout" && exit 1
