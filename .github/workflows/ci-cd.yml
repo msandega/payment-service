@@ -9,7 +9,7 @@ on:
 
 env:
   IMAGE_PAYMENT: ranckosolutionsinc/payments-service   # <<-- REPLACE with your image
-  IMAGE_TAG: latest
+  IMAGE_TAG: v1.0
 
 jobs:
   pr-checks:
