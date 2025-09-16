@@ -1,4 +1,4 @@
-name: CI/CD - Payments API (Network Fixed)
+name: CI/CD - Payments API (Environment Fixed)
 
 on:
   workflow_dispatch: {}
@@ -24,8 +24,10 @@ jobs:
       - name: Start Mongo (test DB)
         run: |
           docker run -d --name ci-mongo --network ci-network \
+            -p 27017:27017 \
             -e MONGO_INITDB_ROOT_USERNAME=mongo \
             -e MONGO_INITDB_ROOT_PASSWORD=password \
+            -e MONGO_INITDB_DATABASE=payments_db \
             mongo:4.2
 
       - name: Wait for MongoDB to be ready
@@ -33,7 +35,7 @@ jobs:
           echo "Waiting for MongoDB to be ready..."
           for i in $(seq 1 30); do
             if docker exec ci-mongo mongo --host localhost:27017 --username mongo --password password --authenticationDatabase admin --eval "db.runCommand('ping')" >/dev/null 2>&1; then
-              echo "MongoDB is ready!"
+              echo "✅ MongoDB is ready!"
               break
             fi
             echo "Waiting for MongoDB... (attempt $i/30)"
@@ -43,162 +45,132 @@ jobs:
       - name: Pull payment image
         run: docker pull ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
-      # SOLUTION 1: Use host network mode
-      - name: Run payment container (host network)
-        env:
-          MONGODB_URI: mongodb://mongo:password@localhost:27017/?authSource=admin
+      - name: Run payment container (with all required env vars)
         run: |
-          # Start MongoDB on host network for easier access
-          docker rm -f ci-mongo || true
-          docker run -d --name ci-mongo \
-            -p 27017:27017 \
-            -e MONGO_INITDB_ROOT_USERNAME=mongo \
-            -e MONGO_INITDB_ROOT_PASSWORD=password \
-            mongo:4.2
-          
-          # Wait for MongoDB
-          sleep 10
-          
-          # Start payment service on host network
           docker run -d \
             --name ci-payment \
-            --network host \
-            -e MONGODB_URI="mongodb://mongo:password@127.0.0.1:27017/?authSource=admin" \
+            --network ci-network \
+            -p 3663:3663 \
+            -e MONGODB_URI="mongodb://mongo:password@ci-mongo:27017/payments_db?authSource=admin" \
+            -e MONGODB_DB_NAME="payments_db" \
+            -e RUST_LOG="info" \
+            -e RUST_BACKTRACE="1" \
+            -e SERVER_HOST="0.0.0.0" \
+            -e SERVER_PORT="3663" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
-            -e INTASEND_TEST_MODE=true \
+            -e INTASEND_TEST_MODE="true" \
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
-      # SOLUTION 2: Alternative - Use docker exec for health checks
-      - name: Alternative health check (using docker exec)
+      - name: Wait for container to stabilize
         run: |
-          echo "=== Container-based health check ==="
+          echo "Waiting for container to start..."
+          sleep 5
           
-          # Wait for service to start
-          sleep 15
-          
-          # Check if container is running
+          # Check if container is still running
           if docker ps --filter name=ci-payment --format "{{.Names}}" | grep -q ci-payment; then
             echo "✅ Container is running"
-            
-            # Try health check from inside the container
-            for i in $(seq 1 20); do
-              echo "Health check attempt $i..."
-              
-              # Method 1: Use docker exec to curl from inside container
-              if docker exec ci-payment curl -sS -m 5 http://localhost:3663/health >/dev/null 2>&1; then
-                echo "✅ Health check passed (via docker exec to localhost)"
-                break
-              elif docker exec ci-payment curl -sS -m 5 http://127.0.0.1:3663/health >/dev/null 2>&1; then
-                echo "✅ Health check passed (via docker exec to 127.0.0.1)"
-                break
-              elif docker exec ci-payment curl -sS -m 5 http://0.0.0.0:3663/health >/dev/null 2>&1; then
-                echo "✅ Health check passed (via docker exec to 0.0.0.0)"
-                break
-              # Method 2: Direct localhost from host (should work with --network host)
-              elif curl -sS -m 5 http://localhost:3663/health >/dev/null 2>&1; then
-                echo "✅ Health check passed (host localhost)"
-                break
-              # Method 3: Try different endpoints
-              elif curl -sS -m 5 http://127.0.0.1:3663/ >/dev/null 2>&1; then
-                echo "✅ Root endpoint accessible"
-                break
-              fi
-              
-              sleep 3
-            done
           else
-            echo "❌ Container is not running"
+            echo "❌ Container exited! Showing logs..."
+            docker logs ci-payment
+            echo "=== Container Status ==="
             docker ps -a --filter name=ci-payment
-            docker logs ci-payment || true
             exit 1
           fi
 
-      # SOLUTION 3: Network inspection and debugging
-      - name: Network debugging
+      - name: Health check with multiple approaches
         run: |
-          echo "=== Network Debugging Information ==="
+          echo "=== Starting health checks ==="
           
-          echo "1. Container status:"
+          # Wait a bit more for the service to fully start
+          sleep 10
+          
+          # Try different health check endpoints and methods
+          HEALTH_ENDPOINTS=("/health" "/healthz" "/api/health" "/status" "/" "/ping")
+          
+          for i in $(seq 1 20); do
+            echo "=== Health check attempt $i ==="
+            
+            # Method 1: From inside the container (most reliable)
+            for endpoint in "${HEALTH_ENDPOINTS[@]}"; do
+              if docker exec ci-payment curl -sS -m 5 "http://localhost:3663$endpoint" >/dev/null 2>&1; then
+                echo "✅ Health check PASSED: Internal localhost$endpoint"
+                echo "=== Service is ready! ==="
+                exit 0
+              fi
+            done
+            
+            # Method 2: From host machine
+            for endpoint in "${HEALTH_ENDPOINTS[@]}"; do
+              if curl -sS -m 5 "http://localhost:3663$endpoint" >/dev/null 2>&1; then
+                echo "✅ Health check PASSED: Host localhost$endpoint"
+                echo "=== Service is ready! ==="
+                exit 0
+              fi
+            done
+            
+            # Method 3: Try container IP directly
+            CONTAINER_IP=$(docker inspect ci-payment --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "")
+            if [ ! -z "$CONTAINER_IP" ]; then
+              for endpoint in "${HEALTH_ENDPOINTS[@]}"; do
+                if curl -sS -m 5 "http://$CONTAINER_IP:3663$endpoint" >/dev/null 2>&1; then
+                  echo "✅ Health check PASSED: Container IP $CONTAINER_IP$endpoint"
+                  echo "=== Service is ready! ==="
+                  exit 0
+                fi
+              done
+            fi
+            
+            # Show progress every 5 attempts
+            if (( i % 5 == 0 )); then
+              echo "=== Debug Info (Attempt $i) ==="
+              echo "Container status:"
+              docker ps --filter name=ci-payment
+              echo "Recent logs:"
+              docker logs --tail 10 ci-payment
+              echo "Port check:"
+              netstat -tlnp | grep 3663 || echo "Port 3663 not found in netstat"
+            fi
+            
+            sleep 3
+          done
+          
+          echo "❌ Health check failed after 20 attempts"
+          echo "=== Final Debug Information ==="
+          docker logs ci-payment
+          docker ps -a --filter name=ci-payment
+          exit 1
+
+      - name: Test API endpoints (if health check passed)
+        run: |
+          echo "=== Testing API functionality ==="
+          
+          # Test basic endpoints
+          echo "1. Testing root endpoint:"
+          curl -sS -D - http://localhost:3663/ | head -10 || true
+          
+          echo "2. Testing health endpoint:"
+          curl -sS -D - http://localhost:3663/health | head -10 || true
+          
+          # If you have other known endpoints, test them here
+          echo "3. Testing any API endpoints:"
+          curl -sS -D - http://localhost:3663/api/v1/status | head -10 || true
+
+      - name: Show final container info
+        if: always()
+        run: |
+          echo "=== Final Container Information ==="
+          echo "Container status:"
           docker ps -a --filter name=ci-payment
           
-          echo "2. Container logs:"
-          docker logs ci-payment || true
+          echo "Container logs:"
+          docker logs ci-payment
           
-          echo "3. Network information:"
-          docker inspect ci-payment --format '{{.NetworkSettings.IPAddress}}' || true
-          docker inspect ci-payment --format '{{.NetworkSettings.Ports}}' || true
+          echo "Container environment:"
+          docker exec ci-payment env | grep -E "(MONGODB|SERVER|INTASEND)" || true
           
-          echo "4. Port binding check:"
-          netstat -tlnp | grep 3663 || echo "No process binding to port 3663"
-          
-          echo "5. Container process list:"
+          echo "Container processes:"
           docker exec ci-payment ps aux || true
-          
-          echo "6. Test different network approaches:"
-          
-          # Get container IP
-          CONTAINER_IP=$(docker inspect ci-payment --format '{{.NetworkSettings.IPAddress}}' 2>/dev/null || echo "")
-          if [ ! -z "$CONTAINER_IP" ]; then
-            echo "Container IP: $CONTAINER_IP"
-            curl -sS -m 5 "http://$CONTAINER_IP:3663/health" || echo "Container IP health check failed"
-          fi
-          
-          # Test Docker gateway
-          GATEWAY_IP=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo "172.17.0.1")
-          echo "Gateway IP: $GATEWAY_IP"
-          
-          # Test host.docker.internal (if available)
-          curl -sS -m 5 http://host.docker.internal:3663/health 2>/dev/null || echo "host.docker.internal not available"
-
-      - name: Comprehensive endpoint testing
-        run: |
-          echo "=== Testing all possible endpoints and methods ==="
-          
-          # Test different hosts and endpoints
-          HOSTS=("localhost" "127.0.0.1" "0.0.0.0")
-          ENDPOINTS=("/" "/health" "/healthz" "/api/health" "/status" "/ping")
-          
-          for host in "${HOSTS[@]}"; do
-            for endpoint in "${ENDPOINTS[@]}"; do
-              echo "Testing http://$host:3663$endpoint"
-              if curl -sS -m 3 "http://$host:3663$endpoint" 2>/dev/null; then
-                echo "✅ SUCCESS: $host$endpoint"
-              else
-                echo "❌ FAILED: $host$endpoint"
-              fi
-            done
-          done
-
-      - name: Final service validation
-        run: |
-          echo "=== Final Service Validation ==="
-          
-          # Check if we can get ANY response from the service
-          SUCCESS=false
-          
-          # Try multiple approaches
-          if curl -sS -m 5 http://localhost:3663/ >/dev/null 2>&1; then
-            echo "✅ Service responding on localhost"
-            SUCCESS=true
-          elif curl -sS -m 5 http://127.0.0.1:3663/ >/dev/null 2>&1; then
-            echo "✅ Service responding on 127.0.0.1"
-            SUCCESS=true
-          elif docker exec ci-payment curl -sS -m 5 http://localhost:3663/ >/dev/null 2>&1; then
-            echo "✅ Service responding internally"
-            SUCCESS=true
-          fi
-          
-          if [ "$SUCCESS" = false ]; then
-            echo "❌ Service validation failed - dumping all debug info"
-            echo "Container logs:"
-            docker logs ci-payment
-            echo "Container inspect:"
-            docker inspect ci-payment
-            exit 1
-          else
-            echo "🎉 Service validation passed!"
-          fi
 
       - name: Cleanup containers (always)
         if: always()
