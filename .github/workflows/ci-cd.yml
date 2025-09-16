@@ -50,7 +50,7 @@ jobs:
         run: |
           for i in $(seq 1 25); do
             echo "Attempt $i ..."
-            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://ci-payment:3663/healthz && exit 0 || true
+            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://localhost:3663/healthz && exit 0 || true
             sleep 3
           done
           echo "Service did not respond within timeout" && exit 1
