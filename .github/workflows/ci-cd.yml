@@ -52,7 +52,7 @@ jobs:
             --name ci-payment \
             --network ci-network \
             -p 3663:3663 \
-            -e HOST_ADDRESS=0.0.0.0 \
+            -e HOST_ADDRESS=0.0.0.0:3663 \
             -e PORT=3663 \
             -e MONGODB_URI="mongodb://mongo:password@ci-mongo:27017/payments_db?authSource=admin" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
