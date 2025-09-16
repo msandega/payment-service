@@ -1,0 +1,15 @@
+### Healthcheck
+GET http://localhost:3663/health
+
+### Create Checkout - MongoDB
+POST http://localhost:3663/checkouts
+Content-Type: application/json
+
+{
+    "email": "me@mt0.dev",
+    "amount": "10000"
+}
+
+### Read Checkout given ID - MongoDB
+GET http://localhost:3663/checkouts/68c6d6a98b27bacf3f0cb515
+Content-Type: application/json
