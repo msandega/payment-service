@@ -2,8 +2,6 @@ name: CI/CD - Payments API
 
 on:
   workflow_dispatch: {}                # allows manual runs from Actions -> Run workflow
-  pull_request:
-    branches: [ "main-default", "trial" ]
   push:
     branches: [ "main-default", "trial" ]
 
@@ -12,7 +10,7 @@ env:
   IMAGE_TAG: v1.0
 
 jobs:
-  pr-checks:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -40,6 +38,7 @@ jobs:
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
             -e INTASEND_TEST_MODE=true \
+            -p 3663:3663 \
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
       - name: Wait for payment service
@@ -55,53 +54,8 @@ jobs:
         run: |
           docker run --network ci-network --rm curlimages/curl:latest -sS -D - http://ci-payment:3663/ | sed -n '1,60p'
 
-      - name: Always dump container logs and list containers
-        if: always()
-        run: |
-          echo "----- ci-payment logs -----"
-          docker logs ci-payment 2>&1 || echo "ci-payment container not found"
-          echo "----- ci-mongo logs -----"
-          docker logs ci-mongo 2>&1 || echo "ci-mongo container not found"
-          echo "----- docker ps -a -----"
-          docker ps -a || true
-
-
       - name: Cleanup containers (always)
         if: always()
         run: |
           docker rm -f ci-payment ci-mongo || true
           docker network rm ci-network || true
-
-  deploy-staging:
-    if: github.ref == 'refs/heads/trial'
-    needs: pr-checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Render staging deploy
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
-        run: |
-          curl -s -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d '{"clearCache": false}' \
-            -o /tmp/render-staging-deploy.json
-          cat /tmp/render-staging-deploy.json
-
-  deploy-prod:
-    if: github.ref == 'refs/heads/main-default'
-    needs: pr-checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Render production deploy
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_PROD_SERVICE_ID }}
-        run: |
-          curl -s -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
-            -H "Authorization: Bearer ${RENDER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d '{"clearCache": false}' \
-            -o /tmp/render-prod-deploy.json
-          cat /tmp/render-prod-deploy.json
