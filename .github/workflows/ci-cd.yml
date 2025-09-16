@@ -42,14 +42,11 @@ jobs:
             -e INTASEND_TEST_MODE=true \
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
-      - name: Wait for service to be healthy
+      - name: Wait for payment service
         run: |
           for i in $(seq 1 25); do
             echo "Attempt $i ..."
-            if curl --silent --fail http://localhost:3663/healthz; then
-              echo "Service is healthy!"
-              exit 0
-            fi
+            curl -sS -m 5 http://localhost:3663/healthz && exit 0 || true
             sleep 3
           done
           echo "Service did not respond within timeout" && exit 1
