@@ -33,14 +33,13 @@ jobs:
         env:
           MONGODB_URI: mongodb://mongo:password@ci-mongo:27017/?authSource=admin
         run: |
-          docker run -d \                   # 🔑 detached mode
-            --name ci-payment \
+          docker run -d \
             --network ci-network \
             -e MONGODB_URI="${MONGODB_URI}" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
             -e INTASEND_TEST_MODE=true \
-            -p 3663:3663 \                  # 🔑 expose port to localhost
+            -p 3663:3663 \
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
 
