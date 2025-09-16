@@ -47,7 +47,7 @@ jobs:
         run: |
           for i in $(seq 1 25); do
             echo "Attempt $i ..."
-            curl -sS -m 5 http://localhost:3663/healthz && exit 0 || true   # 🔑 use localhost
+            curl -sS -m 5 http://localhost:3663/healthz && exit 0 || true
             sleep 3
           done
           echo "Service did not respond within timeout" && exit 1
