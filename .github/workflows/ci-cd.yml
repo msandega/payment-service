@@ -1,12 +1,12 @@
 name: CI/CD - Payments API
 
 on:
-  workflow_dispatch: {}                # allows manual runs from Actions -> Run workflow
+  workflow_dispatch: {}                # manual runs
   push:
     branches: [ "main-default", "trial" ]
 
 env:
-  IMAGE_PAYMENT: ranckosolutionsinc/payments-service   # <<-- REPLACE with your image
+  IMAGE_PAYMENT: ranckosolutionsinc/payments-service
   IMAGE_TAG: v1.0
 
 jobs:
@@ -21,9 +21,7 @@ jobs:
 
       - name: Start Mongo (test DB)
         run: |
-          docker run -d \
-            --name ci-mongo \
-            --network ci-network \
+          docker run -d --name ci-mongo --network ci-network \
             -e MONGO_INITDB_ROOT_USERNAME=mongo \
             -e MONGO_INITDB_ROOT_PASSWORD=password \
             mongo:4.2
@@ -35,29 +33,28 @@ jobs:
         env:
           MONGODB_URI: mongodb://mongo:password@ci-mongo:27017/?authSource=admin
         run: |
-          docker run -d \
+          docker run -d \                   # 🔑 detached mode
             --name ci-payment \
             --network ci-network \
             -e MONGODB_URI="${MONGODB_URI}" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
             -e INTASEND_TEST_MODE=true \
-            -p 3663:3663 \
+            -p 3663:3663 \                  # 🔑 expose port to localhost
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
-
 
       - name: Wait for payment service
         run: |
           for i in $(seq 1 25); do
             echo "Attempt $i ..."
-            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://localhost:3663/healthz && exit 0 || true
+            curl -sS -m 5 http://localhost:3663/healthz && exit 0 || true   # 🔑 use localhost
             sleep 3
           done
           echo "Service did not respond within timeout" && exit 1
 
-      - name: Smoke test (internal)
+      - name: Smoke test (via localhost)
         run: |
-          docker run --network ci-network --rm curlimages/curl:latest -sS -D - http://ci-payment:3663/ | sed -n '1,60p'
+          curl -sS -D - http://localhost:3663/ | sed -n '1,60p'
 
       - name: Cleanup containers (always)
         if: always()
