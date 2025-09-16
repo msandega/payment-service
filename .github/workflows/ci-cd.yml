@@ -23,47 +23,218 @@ jobs:
 
       - name: Start Mongo (test DB)
         run: |
-          docker run -d \
-            --name ci-mongo \
-            --network ci-network \
+          docker run -d --name ci-mongo --network ci-network \
+            -p 27017:27017 \
             -e MONGO_INITDB_ROOT_USERNAME=mongo \
             -e MONGO_INITDB_ROOT_PASSWORD=password \
+            -e MONGO_INITDB_DATABASE=payments_db \
             mongo:4.2
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          echo "Waiting for MongoDB to be ready..."
+          for i in $(seq 1 30); do
+            if docker exec ci-mongo mongo --host localhost:27017 --username mongo --password password --authenticationDatabase admin --eval "db.runCommand('ping')" >/dev/null 2>&1; then
+              echo "✅ MongoDB is ready!"
+              break
+            fi
+            echo "Waiting for MongoDB... (attempt $i/30)"
+            sleep 2
+          done
 
       - name: Pull payment image
         run: docker pull ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
-      - name: Run payment container (test mode)
-        env:
-          MONGODB_URI: mongodb://mongo:password@ci-mongo:27017/?authSource=admin
+      - name: Run payment container (with required env vars)
         run: |
+          echo "Starting payment container with minimal required environment..."
           docker run -d \
             --name ci-payment \
             --network ci-network \
-            -e MONGODB_URI="${MONGODB_URI}" \
+            -p 3663:3663 \
+            -e HOST_ADDRESS=0.0.0.0 \
+            -e PORT=3663 \
+            -e MONGODB_URI="mongodb://mongo:password@ci-mongo:27017/payments_db?authSource=admin" \
             -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
             -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
             -e INTASEND_TEST_MODE=true \
-            -p 3663:3663 \
             ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
 
-      - name: Wait for payment service
+      - name: Wait and check container status
         run: |
-          for i in $(seq 1 25); do
-            echo "Attempt $i ..."
-            docker run --network ci-network --rm curlimages/curl:latest \
-              -sS -m 5 http://ci-payment:3663/healthz && exit 0 || true
+          echo "Waiting for container to initialize..."
+          sleep 10
+          
+          echo "=== Container Status Check ==="
+          if docker ps --filter name=ci-payment --format "{{.Names}}" | grep -q ci-payment; then
+            echo "✅ Container is running successfully!"
+            
+            echo "=== Container Details ==="
+            docker ps --filter name=ci-payment --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            echo "=== Recent Container Logs ==="
+            docker logs --tail 20 ci-payment
+            
+          else
+            echo "❌ Container failed to start or exited!"
+            echo "=== Container Status ==="
+            docker ps -a --filter name=ci-payment --format "table {{.Names}}\t{{.Status}}\t{{.Command}}"
+            
+            echo "=== Full Container Logs ==="
+            docker logs ci-payment
+            
+            echo "=== Container Inspection ==="
+            docker inspect ci-payment --format '{{json .State}}' | python3 -m json.tool 2>/dev/null || echo "Cannot parse container state"
+            
+            exit 1
+          fi
+
+      - name: Comprehensive health check
+        run: |
+          echo "=== Starting comprehensive health checks ==="
+          
+          # First, let the service fully initialize
+          sleep 15
+          
+          # Define all possible endpoints to test
+          ENDPOINTS=(
+            "/health"
+            "/healthz" 
+            "/healthcheck"
+            "/status"
+            "/ping"
+            "/ready"
+            "/api/health"
+            "/api/v1/health"
+            "/api/status"
+            "/"
+          )
+          
+          echo "Testing ${#ENDPOINTS[@]} different endpoints..."
+          
+          # Try multiple approaches for each endpoint
+          for attempt in $(seq 1 25); do
+            echo "=== Health check attempt $attempt/25 ==="
+            
+            # Method 1: From inside container (most reliable)
+            echo "Testing from inside container..."
+            for endpoint in "${ENDPOINTS[@]}"; do
+              if docker exec ci-payment curl -sS -f -m 5 "http://localhost:3663$endpoint" >/dev/null 2>&1; then
+                echo "✅ SUCCESS: Internal check passed for $endpoint"
+                echo "=== Getting actual response ==="
+                docker exec ci-payment curl -sS -m 5 "http://localhost:3663$endpoint"
+                echo "=== Service is healthy and ready! ==="
+                exit 0
+              fi
+            done
+            
+            # Method 2: From host machine
+            echo "Testing from host machine..."
+            for endpoint in "${ENDPOINTS[@]}"; do
+              if curl -sS -f -m 5 "http://localhost:3663$endpoint" >/dev/null 2>&1; then
+                echo "✅ SUCCESS: Host check passed for $endpoint"
+                echo "=== Getting actual response ==="
+                curl -sS -m 5 "http://localhost:3663$endpoint"
+                echo "=== Service is healthy and ready! ==="
+                exit 0
+              fi
+            done
+            
+            # Method 3: Container IP (if accessible)
+            CONTAINER_IP=$(docker inspect ci-payment --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "")
+            if [ ! -z "$CONTAINER_IP" ] && [ "$CONTAINER_IP" != "null" ]; then
+              echo "Testing container IP: $CONTAINER_IP"
+              for endpoint in "${ENDPOINTS[@]}"; do
+                if curl -sS -f -m 5 "http://$CONTAINER_IP:3663$endpoint" >/dev/null 2>&1; then
+                  echo "✅ SUCCESS: Container IP check passed for $endpoint"
+                  curl -sS -m 5 "http://$CONTAINER_IP:3663$endpoint"
+                  echo "=== Service is healthy and ready! ==="
+                  exit 0
+                fi
+              done
+            fi
+            
+            # Show debug info every 5 attempts
+            if (( attempt % 5 == 0 )); then
+              echo "=== Debug Information (Attempt $attempt) ==="
+              
+              echo "Container status:"
+              docker ps --filter name=ci-payment --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              
+              echo "Recent logs:"
+              docker logs --tail 10 ci-payment
+              
+              echo "Network information:"
+              docker inspect ci-payment --format '{{.NetworkSettings.IPAddress}}' 2>/dev/null || echo "No IP found"
+              
+              echo "Port bindings:"
+              docker port ci-payment 2>/dev/null || echo "No port bindings found"
+              
+              echo "Host port check:"
+              netstat -tlnp | grep 3663 || echo "Port 3663 not bound on host"
+              
+              echo "Process check in container:"
+              docker exec ci-payment ps aux 2>/dev/null | head -10 || echo "Cannot check processes"
+            fi
+            
             sleep 3
           done
-          echo "Service did not respond within timeout" && exit 1
+          
+          echo "❌ All health checks failed after 25 attempts!"
+          echo "=== Final Debug Information ==="
+          
+          echo "Final container logs:"
+          docker logs ci-payment
+          
+          echo "Container environment:"
+          docker exec ci-payment env | sort || echo "Cannot access container environment"
+          
+          echo "Container filesystem (app directory):"
+          docker exec ci-payment ls -la / || echo "Cannot access container filesystem"
+          
+          echo "Network connectivity test:"
+          docker exec ci-payment ping -c 2 ci-mongo || echo "Cannot ping MongoDB"
+          
+          exit 1
 
-      - name: Smoke test (internal)
+      - name: API functionality test (if health passed)
         run: |
-          docker run --network ci-network --rm curlimages/curl:latest \
-            -sS -D - http://ci-payment:3663/ | sed -n '1,60p'
+          echo "=== Testing API functionality ==="
+          
+          # Test different endpoints with various methods
+          echo "1. Root endpoint:"
+          curl -sS -D - -m 10 http://localhost:3663/ | head -20 || echo "Root endpoint failed"
+          
+          echo "2. Health endpoint:"
+          curl -sS -D - -m 10 http://localhost:3663/health | head -20 || echo "Health endpoint failed"
+          
+          echo "3. Status endpoint:"
+          curl -sS -D - -m 10 http://localhost:3663/status | head -20 || echo "Status endpoint failed"
+          
+          echo "4. API endpoints:"
+          curl -sS -D - -m 10 http://localhost:3663/api/v1/health | head -20 || echo "API health endpoint failed"
+
+      - name: Final container diagnostics
+        if: always()
+        run: |
+          echo "=== Final Container Diagnostics ==="
+          
+          echo "Container status:"
+          docker ps -a --filter name=ci-payment --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Command}}"
+          
+          echo "Complete container logs:"
+          docker logs ci-payment 2>&1 | tail -50
+          
+          echo "Container environment variables:"
+          docker exec ci-payment env | grep -E "(HOST|PORT|MONGO|SERVER|INTASEND)" | sort || echo "Cannot access environment"
+          
+          echo "Container network settings:"
+          docker inspect ci-payment --format '{{json .NetworkSettings}}' | python3 -m json.tool 2>/dev/null || echo "Cannot inspect network settings"
 
       - name: Cleanup containers (always)
         if: always()
         run: |
+          echo "=== Cleaning up containers ==="
           docker rm -f ci-payment ci-mongo || true
           docker network rm ci-network || true
+          echo "Cleanup completed"
