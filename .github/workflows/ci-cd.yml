@@ -1,0 +1,114 @@
+name: CI/CD - Payments API
+
+on:
+  workflow_dispatch: {}                # allows manual runs from Actions -> Run workflow
+  pull_request:
+    branches: [ "main-default", "trial" ]
+  push:
+    branches: [ "main-default", "trial" ]
+
+env:
+  IMAGE_PAYMENT: ranckosolutionsinc/payments-service   # <<-- REPLACE with your image
+  IMAGE_TAG: latest
+
+jobs:
+  pr-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Create a Docker network
+        run: docker network create ci-network || true
+
+      - name: (Optional) Login to Docker Hub (if image is private)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Start Mongo (test DB)
+        run: |
+          docker run -d --name ci-mongo --network ci-network \
+            -e MONGO_INITDB_ROOT_USERNAME=mongo \
+            -e MONGO_INITDB_ROOT_PASSWORD=password \
+            mongo:4.2
+
+      - name: Pull payment image
+        run: docker pull ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
+
+      - name: Run payment container (test mode)
+        env:
+          MONGODB_URI: mongodb://mongo:password@ci-mongo:27017/?authSource=admin
+        run: |
+          docker run -d --name ci-payment --network ci-network \
+            -e MONGODB_URI="${MONGODB_URI}" \
+            -e INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY }}" \
+            -e INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY }}" \
+            -e INTASEND_TEST_MODE=true \
+            ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
+
+      - name: Wait for service to be healthy (via internal curl)
+        run: |
+          for i in $(seq 1 25); do
+            echo "Attempt $i ..."
+            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://ci-payment:3663/healthz && exit 0 || true
+            docker run --network ci-network --rm curlimages/curl:latest -sS -m 5 http://ci-payment:3663/ && exit 0 || true
+            sleep 3
+          done
+          echo "Service did not respond within timeout" && exit 1
+
+      - name: Smoke test (internal)
+        run: |
+          docker run --network ci-network --rm curlimages/curl:latest -sS -D - http://ci-payment:3663/ | sed -n '1,60p'
+
+      - name: Always: dump container logs & list containers
+        if: always()
+        run: |
+          echo "----- ci-payment logs -----"
+          docker logs ci-payment || true
+          echo "----- ci-mongo logs -----"
+          docker logs ci-mongo || true
+          echo "----- docker ps -a -----"
+          docker ps -a || true
+
+      - name: Cleanup containers (always)
+        if: always()
+        run: |
+          docker rm -f ci-payment ci-mongo || true
+          docker network rm ci-network || true
+
+  deploy-staging:
+    if: github.ref == 'refs/heads/trial'
+    needs: pr-checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render staging deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_STAGING_SERVICE_ID }}
+        run: |
+          curl -s -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": false}' \
+            -o /tmp/render-staging-deploy.json
+          cat /tmp/render-staging-deploy.json
+
+  deploy-prod:
+    if: github.ref == 'refs/heads/main-default'
+    needs: pr-checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render production deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_PROD_SERVICE_ID }}
+        run: |
+          curl -s -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache": false}' \
+            -o /tmp/render-prod-deploy.json
+          cat /tmp/render-prod-deploy.json
