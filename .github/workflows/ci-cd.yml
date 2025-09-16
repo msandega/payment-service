@@ -21,13 +21,6 @@ jobs:
       - name: Create a Docker network
         run: docker network create ci-network || true
 
-      - name: (Optional) Login to Docker Hub (if image is private)
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Start Mongo (test DB)
         run: |
           docker run -d --name ci-mongo --network ci-network \
