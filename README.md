@@ -13,12 +13,6 @@
 
 A production-ready Payment Gateway API built with Rust and MongoDB, featuring complete CI/CD pipeline, containerization, and cloud deployment capabilities.
 
-## 🌐 Live Demo
-
-- **API Status**: [![API Status](https://img.shields.io/badge/API-online-success)](https://your-app.onrender.com/health)
-- **Health Check**: https://your-app.onrender.com/health
-- **Documentation**: https://your-app.onrender.com/docs
-
 ## ✨ Features
 
 - 🔒 **Secure Payment Processing** - Integration with IntaSend, PayStack, Stripe
@@ -60,7 +54,7 @@ graph TB
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/payment-gateway-api.git
+git clone https://github.com/msandega/payment-service.git
 cd payment-gateway-api
 
 # Start services with provided scripts
@@ -318,26 +312,6 @@ docker exec -it mongodb mongo -u mongo -p password
 # Check connection string format
 echo $MONGODB_URI
 ```
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/payment-gateway-api/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/payment-gateway-api/discussions)
-- **Documentation**: [Wiki](https://github.com/yourusername/payment-gateway-api/wiki)
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Built with [Rust](https://rust-lang.org/) and [Tokio](https://tokio.rs/)
-- Database powered by [MongoDB](https://mongodb.com/)
-- Payment processing via [IntaSend](https://intasend.com/)
-- Containerized with [Docker](https://docker.com/)
-- Deployed on [Render](https://render.com/) and [Railway](https://railway.app/)
-
----
 
 <div align="center">
 
