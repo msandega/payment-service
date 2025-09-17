@@ -238,3 +238,139 @@ jobs:
           docker rm -f ci-payment ci-mongo || true
           docker network rm ci-network || true
           echo "Cleanup completed"
+          # Debug Environment Variables Step
+# Add this to your CI/CD pipeline to debug environment variable issues
+
+      - name: Debug Environment Variables
+        run: |
+          echo "=== DEBUGGING ENVIRONMENT VARIABLES ==="
+          
+          echo "1. Testing simple container with env vars:"
+          docker run --rm -e TEST_VAR="hello" alpine sh -c 'echo "TEST_VAR=$TEST_VAR"'
+          
+          echo "2. Testing if our specific env vars work:"
+          docker run --rm \
+            -e MONGODB_DB_NAME="payments_db" \
+            -e HOST_ADDRESS="0.0.0.0" \
+            alpine sh -c 'echo "MONGODB_DB_NAME=$MONGODB_DB_NAME"; echo "HOST_ADDRESS=$HOST_ADDRESS"'
+          
+          echo "3. Testing our payment service with debug info:"
+          docker run --rm \
+            -e MONGODB_DB_NAME="payments_db" \
+            -e HOST_ADDRESS="0.0.0.0" \
+            -e RUST_BACKTRACE="full" \
+            ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }} sh -c 'env | grep -E "(MONGODB|HOST)" || echo "No env vars found"' || \
+          echo "Service doesn't have shell access, checking container directly..."
+
+      - name: Run payment container (FIXED with explicit env vars)
+        run: |
+          echo "=== Starting payment container with explicit environment variables ==="
+          
+          # Create the container with explicit environment variables
+          docker run -d \
+            --name ci-payment \
+            --network ci-network \
+            -p 3663:3663 \
+            --env MONGODB_URI="mongodb://mongo:password@ci-mongo:27017/payments_db?authSource=admin" \
+            --env MONGODB_DB_NAME="payments_db" \
+            --env HOST_ADDRESS="0.0.0.0" \
+            --env SERVER_HOST="0.0.0.0" \
+            --env SERVER_PORT="3663" \
+            --env PORT="3663" \
+            --env RUST_LOG="info" \
+            --env RUST_BACKTRACE="full" \
+            --env INTASEND_PUBLIC_KEY="${{ secrets.CI_INTASEND_PUBLIC_KEY || 'pk_test_dummy' }}" \
+            --env INTASEND_SECRET_KEY="${{ secrets.CI_INTASEND_SECRET_KEY || 'sk_test_dummy' }}" \
+            --env INTASEND_TEST_MODE="true" \
+            ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
+          
+          echo "Container started with ID: $(docker ps -lq)"
+
+      - name: Verify environment variables in container
+        run: |
+          echo "=== Verifying environment variables inside container ==="
+          
+          # Wait a moment for container to start
+          sleep 2
+          
+          # Check if container exists and get its status
+          if docker ps -a --filter name=ci-payment --format "{{.Names}}" | grep -q ci-payment; then
+            echo "Container exists. Checking environment variables..."
+            
+            # Try to inspect environment variables
+            echo "Environment variables in container:"
+            docker inspect ci-payment --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E "(MONGODB|HOST|PORT|INTASEND)" || echo "No matching env vars found in inspect"
+            
+            # If container is still running, try to exec into it
+            if docker ps --filter name=ci-payment --format "{{.Names}}" | grep -q ci-payment; then
+              echo "Container is running. Checking internal environment:"
+              docker exec ci-payment sh -c 'env | grep -E "(MONGODB|HOST|PORT|INTASEND)" | sort' || echo "Cannot exec into container"
+            else
+              echo "Container exited. Checking logs:"
+              docker logs ci-payment
+            fi
+          else
+            echo "Container not found!"
+          fi
+
+      - name: Alternative approach - Environment file
+  run: |
+    echo "=== Trying with environment file approach ==="
+    
+    # Clean up any existing container
+    docker rm -f ci-payment || true
+    
+    # Create environment file
+    cat > payment.env << EOF
+    MONGODB_URI=mongodb://mongo:password@ci-mongo:27017/payments_db?authSource=admin
+    MONGODB_DB_NAME=payments_db
+    HOST_ADDRESS=0.0.0.0
+    SERVER_HOST=0.0.0.0
+    SERVER_PORT=3663
+    PORT=3663
+    RUST_LOG=info
+    RUST_BACKTRACE=full
+    INTASEND_PUBLIC_KEY=${{ secrets.CI_INTASEND_PUBLIC_KEY || 'pk_test_dummy' }}
+    INTASEND_SECRET_KEY=${{ secrets.CI_INTASEND_SECRET_KEY || 'sk_test_dummy' }}
+    INTASEND_TEST_MODE=true
+    EOF
+    
+    echo "Environment file contents:"
+    cat payment.env
+    
+    # Start container with environment file
+    docker run -d \
+      --name ci-payment \
+      --network ci-network \
+      -p 3663:3663 \
+      --env-file payment.env \
+      ${{ env.IMAGE_PAYMENT }}:${{ env.IMAGE_TAG }}
+    
+    echo "Container started with environment file"
+
+    - name: Final environment check
+      run: |
+        echo "=== Final environment verification ==="
+        
+        sleep 5
+        
+        if docker ps --filter name=ci-payment --format "{{.Names}}" | grep -q ci-payment; then
+          echo "✅ Container is running!"
+          
+          echo "Container environment (from inspect):"
+          docker inspect ci-payment --format '{{range .Config.Env}}{{println .}}{{end}}' | sort
+          
+          echo "Container logs:"
+          docker logs ci-payment | head -20
+          
+        else
+          echo "❌ Container still failing"
+          echo "Container status:"
+          docker ps -a --filter name=ci-payment
+          
+          echo "Container logs:"
+          docker logs ci-payment
+          
+          echo "Container environment (from inspect):"
+          docker inspect ci-payment --format '{{range .Config.Env}}{{println .}}{{end}}' | sort
+        fi
